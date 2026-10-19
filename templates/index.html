@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL-CV | AI Shoplifting Detection & Behavioral Surveillance</title>
+    <meta name="description" content="Real-time intelligent shoplifting detection system using YOLOv8 pose estimation, biomechanical kinematic analysis, and loss-prevention telemetry.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body class="command-center-body">
+    <!-- Top Navigation Header -->
+    <header class="top-nav">
+        <div class="nav-left">
+            <div class="brand-logo">
+                <div class="logo-shield">
+                    <i data-lucide="shield-alert" class="icon-pulse"></i>
+                </div>
+                <div class="brand-titles">
+                    <h1 class="brand-name">SENTINEL<span>.AI</span></h1>
+                    <p class="brand-tagline">AI SURVEILLANCE & SHOPLIFTING MITIGATION</p>
+                </div>
+            </div>
+            
+            <div class="system-status-badge" id="system-status-indicator">
+                <span class="status-dot pulse-green"></span>
+                <span class="status-label" id="status-text">SYSTEM ARMED</span>
+            </div>
+        </div>
+
+        <div class="nav-center">
+            <!-- Source Selector Buttons -->
+            <div class="source-pills">
+                <button class="source-pill active" id="btn-src-demo" onclick="switchVideoSource('demo')">
+                    <i data-lucide="film"></i>
+                    <span>CCTV Demo</span>
+                </button>
+                <button class="source-pill" id="btn-src-webcam" onclick="switchVideoSource('webcam')">
+                    <i data-lucide="camera"></i>
+                    <span>Live Webcam</span>
+                </button>
+                <label class="source-pill upload-pill" id="btn-src-upload">
+                    <i data-lucide="upload-cloud"></i>
+                    <span>Upload Video</span>
+                    <input type="file" id="video-upload-input" accept="video/*" onchange="handleVideoUpload(this)" style="display:none;">
+                </label>
+            </div>
+        </div>
+
+        <div class="nav-right">
+            <div class="audio-toggle-btn" id="audio-toggle" onclick="toggleAudioAlerts()" title="Toggle Siren Sound Alert">
+                <i data-lucide="volume-2" id="audio-icon"></i>
+                <span id="audio-label">Sound Alerts: ON</span>
+            </div>
+            <div class="clock-display" id="live-clock">
+                <span id="clock-time">--:--:--</span>
+                <span id="clock-date">OCT 19, 2026</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Surveillance Dashboard Grid -->
+    <main class="dashboard-grid">
+        <!-- Center Left: Video Monitor & Tactical Overlays -->
+        <section class="video-monitor-panel">
+            <div class="panel-header">
+                <div class="header-title">
+                    <i data-lucide="video"></i>
+                    <span>PRIMARY SURVEILLANCE FEED [CAM-01]</span>
+                </div>
+                <div class="feed-meta-badges">
+                    <span class="meta-badge" id="fps-badge">FPS: 0.0</span>
+                    <span class="meta-badge" id="res-badge">854x480</span>
+                    <span class="meta-badge danger" id="threat-global-badge">THREAT: 0%</span>
+                </div>
+            </div>
+
+            <!-- Video Player Viewport -->
+            <div class="video-container" id="video-wrapper">
+                <img id="surveillance-stream" src="/video_feed" alt="Surveillance Video Feed">
+                
+                <!-- Crosshair corner brackets -->
+                <div class="hud-bracket top-left"></div>
+                <div class="hud-bracket top-right"></div>
+                <div class="hud-bracket bottom-left"></div>
+                <div class="hud-bracket bottom-right"></div>
+
+                <!-- Threat Alert Overlay Flash -->
+                <div class="alert-flash-curtain" id="alert-flash"></div>
+
+                <!-- On-Screen Tactical HUD Info -->
+                <div class="video-hud-overlay">
+                    <div class="hud-top-info">
+                        <span class="hud-rec-dot"></span>
+                        <span class="hud-label" id="stream-source-label">SRC: RETAIL CCTV DEMO</span>
+                    </div>
+                    <div class="hud-bottom-info">
+                        <span id="hud-target-count">TRACKED TARGETS: 0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stream Control Toolbar & AI Overlay Toggles -->
+            <div class="stream-toolbar">
+                <div class="toolbar-group">
+                    <span class="group-label">AI Visual Overlays:</span>
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="toggle-skeleton" checked onchange="toggleFeature('skeleton', this.checked)">
+                        <span class="chip-slider"></span>
+                        <span>Pose Skeleton</span>
+                    </label>
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="toggle-zones" checked onchange="toggleFeature('zones', this.checked)">
+                        <span class="chip-slider"></span>
+                        <span>Pocket & Chest Zones</span>
+                    </label>
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="toggle-trajectory" checked onchange="toggleFeature('trajectory', this.checked)">
+                        <span class="chip-slider"></span>
+                        <span>Wrist Trails</span>
+                    </label>
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="toggle-hud" checked onchange="toggleFeature('hud', this.checked)">
+                        <span class="chip-slider"></span>
+                        <span>Biometric Tags</span>
+                    </label>
+                </div>
+
+                <div class="toolbar-group sensitivity-group">
+                    <span class="group-label">Confidence Sensitivity:</span>
+                    <div class="slider-wrapper">
+                        <input type="range" id="conf-slider" min="0.15" max="0.80" step="0.05" value="0.35" onchange="updateConfidence(this.value)" oninput="document.getElementById('conf-val').innerText = Math.round(this.value*100) + '%'">
+                        <span class="slider-val" id="conf-val">35%</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right: Active Persons & Threat Biometrics -->
+        <aside class="biometrics-panel">
+            <div class="panel-header">
+                <div class="header-title">
+                    <i data-lucide="user-check"></i>
+                    <span>REAL-TIME SUSPECT TELEMETRY</span>
+                </div>
+                <span class="badge-count" id="active-suspect-count">0 ACTIVE</span>
+            </div>
+
+            <!-- Person Cards Container -->
+            <div class="suspect-cards-list" id="suspect-cards-list">
+                <div class="empty-state">
+                    <i data-lucide="radar" class="spin-icon"></i>
+                    <p>Scanning camera field for persons...</p>
+                </div>
+            </div>
+
+            <!-- Behavior Analysis Guide / Legend -->
+            <div class="behavior-legend-card">
+                <h4><i data-lucide="info"></i> Loss Prevention Heuristics</h4>
+                <div class="legend-grid">
+                    <div class="legend-item">
+                        <span class="dot-indicator green"></span>
+                        <div class="text">
+                            <strong>Safe (0-34%)</strong>
+                            <small>Normal browsing or basket usage</small>
+                        </div>
+                    </div>
+                    <div class="legend-item">
+                        <span class="dot-indicator yellow"></span>
+                        <div class="text">
+                            <strong>Suspicious (35-64%)</strong>
+                            <small>Hand in pocket or crouching</small>
+                        </div>
+                    </div>
+                    <div class="legend-item">
+                        <span class="dot-indicator red"></span>
+                        <div class="text">
+                            <strong>High Alert (65-100%)</strong>
+                            <small>Reach-to-pocket grab or jacket stash</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Bottom: Incident Alerts & Evidence Snapshots -->
+        <section class="incidents-panel">
+            <div class="panel-header">
+                <div class="header-title">
+                    <i data-lucide="alert-triangle" class="warn-icon"></i>
+                    <span>LOSS PREVENTION INCIDENT LOG & EVIDENCE SNAPSHOTS</span>
+                </div>
+                <div class="incidents-actions">
+                    <button class="btn-action" onclick="exportIncidents('csv')">
+                        <i data-lucide="download"></i>
+                        <span>Export CSV</span>
+                    </button>
+                    <button class="btn-action" onclick="exportIncidents('json')">
+                        <i data-lucide="file-json"></i>
+                        <span>Export JSON</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="incidents-content-layout">
+                <!-- Live Event Stream Table -->
+                <div class="incident-table-wrapper">
+                    <table class="incident-table" id="incident-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Suspect</th>
+                                <th>Threat Score</th>
+                                <th>Pocket Dwell</th>
+                                <th>Jacket Stash</th>
+                                <th>Reach Seq</th>
+                                <th>Detected Behaviors</th>
+                                <th>Evidence</th>
+                            </tr>
+                        </thead>
+                        <tbody id="incident-table-body">
+                            <!-- Injected dynamically -->
+                            <tr class="no-records">
+                                <td colspan="8">No shoplifting incidents flagged yet. Monitoring active streams.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Snapshot Evidence Gallery Strip -->
+                <div class="snapshot-gallery-wrapper">
+                    <div class="gallery-title">
+                        <i data-lucide="camera"></i>
+                        <span>Recent Evidence Captures</span>
+                    </div>
+                    <div class="snapshot-strip" id="snapshot-strip">
+                        <!-- Thumbnails injected dynamically -->
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal for Enlarged Snapshot Evidence -->
+    <div class="modal-backdrop" id="evidence-modal" onclick="closeModal()">
+        <div class="modal-card" onclick="event.stopPropagation()">
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+            <div class="modal-header">
+                <h3 id="modal-title">Incident Evidence Snapshot</h3>
+                <span id="modal-meta">Suspect #-- | --:--:--</span>
+            </div>
+            <div class="modal-image-container">
+                <img id="modal-img" src="" alt="Incident Frame">
+            </div>
+            <div class="modal-details" id="modal-details">
+                <!-- Injected dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/dashboard.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
