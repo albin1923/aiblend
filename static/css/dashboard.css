@@ -253,7 +253,7 @@ body.command-center-body {
    ===================================================================== */
 .dashboard-grid {
     display: grid;
-    grid-template-columns: 1.8fr 1.2fr;
+    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr);
     grid-template-rows: auto auto;
     gap: 1.25rem;
     padding: 1.25rem 1.75rem;
@@ -390,11 +390,17 @@ body.command-center-body {
 }
 
 .hud-top-info {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 0.5rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    background: rgba(10, 13, 20, 0.78);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     color: #e2e8f0;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    margin-top: 32px;
+    width: fit-content;
 }
 
 .hud-rec-dot {
@@ -406,9 +412,17 @@ body.command-center-body {
 }
 
 .hud-bottom-info {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    background: rgba(10, 13, 20, 0.78);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(56, 189, 248, 0.25);
     color: var(--accent-cyan);
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
     font-weight: 600;
+    width: fit-content;
+    margin-bottom: 26px;
 }
 
 /* Toolbar & Toggles */
@@ -797,9 +811,15 @@ body.command-center-body {
 
 .incidents-content-layout {
     display: grid;
-    grid-template-columns: 2fr 1fr;
+    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr);
     gap: 1.25rem;
     margin-top: 0.5rem;
+    min-width: 0;
+}
+
+.incident-table-wrapper,
+.snapshot-gallery-wrapper {
+    min-width: 0;
 }
 
 /* Incident Table */

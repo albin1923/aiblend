@@ -75,6 +75,17 @@ class ShopliftingDetector:
             print(f"[Detector] Warning during model initialization: {e}")
             self.model = None
 
+    def reset(self):
+        """Reset internal tracker manager and model tracking sequence."""
+        self.tracker_manager.reset()
+        if self.model is not None and hasattr(self.model, "predictor") and self.model.predictor is not None:
+            if hasattr(self.model.predictor, "trackers") and self.model.predictor.trackers:
+                for trk in self.model.predictor.trackers:
+                    if hasattr(trk, "reset"):
+                        trk.reset()
+                    if hasattr(trk, "reset_id"):
+                        trk.reset_id()
+
     def process_frame(self, frame: np.ndarray, current_time: float = None) -> Tuple[np.ndarray, List[Dict[str, Any]], Dict[str, Any]]:
         """
         Processes a single video frame:
@@ -133,15 +144,15 @@ class ShopliftingDetector:
                                 'keypoints': kp
                             })
             except Exception as e:
-                # Fallback on tracking error
-                pass
+                # Log tracking error if any
+                print(f"[Detector] Tracking error: {e}")
 
         # Update behavioral state trackers
         alerts = self.tracker_manager.update_tracks(detections, current_time)
         
         # Render surveillance HUD on frame copy
         annotated = frame.copy()
-        self._render_hud(annotated, alerts)
+        self._render_hud(annotated, alerts, current_time)
         
         # Frame telemetry summary
         active_telemetry = self.tracker_manager.get_active_telemetry()
@@ -164,12 +175,15 @@ class ShopliftingDetector:
         
         return annotated, alerts, telemetry
 
-    def _render_hud(self, frame: np.ndarray, new_alerts: List[Dict[str, Any]]):
+    def _render_hud(self, frame: np.ndarray, new_alerts: List[Dict[str, Any]], current_time: float = None):
         """Draws tactical HUD, skeletons, concealment zones, and warning banners."""
         h, w = frame.shape[:2]
         
         # 1. Render person annotations
         for pid, tracker in self.tracker_manager.trackers.items():
+            # Suppress stale tracks that were not detected in current frame to avoid ghost overlays
+            if current_time is not None and (current_time - tracker.last_seen) > 0.4:
+                continue
             bbox = tracker.bbox
             threat = tracker.threat_score
             threat_level = tracker.threat_level
@@ -341,26 +355,26 @@ class ShopliftingDetector:
         cv2.line(frame, (0, banner_h), (w, banner_h), (60, 60, 70), 1)
         
         # Status Items
-        cv2.circle(frame, (18, 18), 5, (0, 255, 0), -1)
-        cv2.putText(frame, "CAM-01 [LIVE]", (30, 23),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
+        cv2.circle(frame, (16, 20), 4, (0, 255, 0), -1)
+        cv2.putText(frame, "CAM-01 [LIVE]", (26, 23),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (240, 240, 240), 1, cv2.LINE_AA)
                     
         fps_text = f"FPS: {self.fps:.1f}"
-        cv2.putText(frame, fps_text, (180, 23),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 200, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, fps_text, (150, 23),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 200, 220), 1, cv2.LINE_AA)
                     
         targets_text = f"TARGETS: {len(self.tracker_manager.trackers)}"
-        cv2.putText(frame, targets_text, (290, 23),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 200, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, targets_text, (240, 23),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 200, 220), 1, cv2.LINE_AA)
                     
         total_alerts = len(self.tracker_manager.all_time_alerts)
         alert_col = COLOR_ALERT if total_alerts > 0 else (180, 200, 220)
-        alerts_text = f"INCIDENTS: {total_alerts}"
-        cv2.putText(frame, alerts_text, (410, 23),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, alert_col, 1, cv2.LINE_AA)
+        alerts_text = f"ALERTS: {total_alerts}"
+        cv2.putText(frame, alerts_text, (345, 23),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, alert_col, 1, cv2.LINE_AA)
                     
         # Device badge
-        dev_text = f"ENGINE: YOLOv8-POSE ({self.device.upper()})"
+        dev_text = f"ENGINE: {self.device.upper()}"
         (tw, _), _ = cv2.getTextSize(dev_text, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
-        cv2.putText(frame, dev_text, (w - tw - 15, 23),
+        cv2.putText(frame, dev_text, (w - tw - 12, 23),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (140, 160, 180), 1, cv2.LINE_AA)

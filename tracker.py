@@ -84,10 +84,12 @@ class PersonTracker:
         # Confidence scores (0.0 to 1.0)
         self.pocket_conf = 0.0
         self.chest_conf = 0.0
+        self.bag_conf = 0.0
         self.sequence_conf = 0.0
         self.crouch_conf = 0.0
         self.threat_score = 0.0
         self.threat_level = "NORMAL"  # "NORMAL", "SUSPICIOUS", "ALERT"
+        self.bag_dwell_frames = 0
         
         # Visual zones for drawing
         self.left_pocket_zone = None
@@ -115,7 +117,7 @@ class PersonTracker:
         self.history.append(snapshot)
         
         if not snapshot.valid:
-            return self._finalize_scores()
+            return self._finalize_scores(current_time)
             
         torso = snapshot.torso_len
         
@@ -188,9 +190,9 @@ class PersonTracker:
         
         if dwell_sec >= config.POCKET_DWELL_TIME_SEC:
             # High pocket confidence scales with dwell duration
-            self.pocket_conf = min(0.96, 0.50 + 0.35 * min(1.0, (dwell_sec - config.POCKET_DWELL_TIME_SEC) / 1.5))
-        elif dwell_sec > 0.3:
-            self.pocket_conf = 0.25 + 0.25 * (dwell_sec / config.POCKET_DWELL_TIME_SEC)
+            self.pocket_conf = min(0.96, 0.55 + 0.35 * min(1.0, (dwell_sec - config.POCKET_DWELL_TIME_SEC) / 0.8))
+        elif dwell_sec > 0.15:
+            self.pocket_conf = 0.30 + 0.25 * (dwell_sec / config.POCKET_DWELL_TIME_SEC)
         else:
             self.pocket_conf = max(0.0, self.pocket_conf * 0.85)
 
@@ -198,17 +200,19 @@ class PersonTracker:
         # 2. JACKET / INNER TORSO CONCEALMENT DETECTION
         # ----------------------------------------------------
         hand_in_chest = False
-        if l_w_conf > config.POSE_KEYPOINT_CONF:
+        if l_w_conf > 0.35:
+            d_l_cross = euclidean_dist(l_wrist, snapshot.r_shoulder) / torso
             d_l_chest = euclidean_dist(l_wrist, chest_center) / torso
-            if d_l_chest < config.CHEST_ZONE_DIST_RATIO:
+            if d_l_cross < 0.36 or d_l_chest < config.CHEST_ZONE_DIST_RATIO:
                 hand_in_chest = True
-                self.active_suspicious_joints.append((9, 5))
+                self.active_suspicious_joints.append((9, 6))
                 
-        if r_w_conf > config.POSE_KEYPOINT_CONF:
+        if r_w_conf > 0.35:
+            d_r_cross = euclidean_dist(r_wrist, snapshot.l_shoulder) / torso
             d_r_chest = euclidean_dist(r_wrist, chest_center) / torso
-            if d_r_chest < config.CHEST_ZONE_DIST_RATIO:
+            if d_r_cross < 0.36 or d_r_chest < config.CHEST_ZONE_DIST_RATIO:
                 hand_in_chest = True
-                self.active_suspicious_joints.append((10, 6))
+                self.active_suspicious_joints.append((10, 5))
                 
         if hand_in_chest:
             self.chest_dwell_frames += 1
@@ -216,34 +220,76 @@ class PersonTracker:
             self.chest_dwell_frames = max(0, self.chest_dwell_frames - 2)
             
         chest_dwell_sec = self.chest_dwell_frames / fps
-        if chest_dwell_sec >= 0.6:
-            self.chest_conf = min(0.92, 0.45 + 0.40 * min(1.0, (chest_dwell_sec - 0.6) / 1.2))
+        if chest_dwell_sec >= 0.35:
+            self.chest_conf = min(0.94, 0.55 + 0.35 * min(1.0, (chest_dwell_sec - 0.35) / 0.8))
+        elif chest_dwell_sec > 0.18:
+            self.chest_conf = 0.30 + 0.20 * (chest_dwell_sec / 0.35)
         else:
             self.chest_conf = max(0.0, self.chest_conf * 0.85)
 
         # ----------------------------------------------------
-        # 3. REACH -> CONCEAL SEQUENCE (Shelf Pick -> Pocket)
+        # 3. BAG / LOWER CONCEALMENT (Backpack / Purse Stashing)
         # ----------------------------------------------------
-        # Detect if hand was previously raised (reaching for merchandise)
-        # In image coords, smaller y = higher elevation (above shoulder)
-        shoulder_y = min(snapshot.l_shoulder[1], snapshot.r_shoulder[1])
+        mid_hip_y = (snapshot.l_hip[1] + snapshot.r_hip[1]) / 2.0
+        mid_knee_y = (snapshot.l_knee[1] + snapshot.r_knee[1]) / 2.0
+        min_hip_x = min(snapshot.l_hip[0], snapshot.r_hip[0]) - 0.25 * torso
+        max_hip_x = max(snapshot.l_hip[0], snapshot.r_hip[0]) + 0.25 * torso
+        w_dist = euclidean_dist(l_wrist, r_wrist) / torso
         
-        # Check if reaching shelf currently
-        l_reaching = (l_w_conf > config.POSE_KEYPOINT_CONF) and (l_wrist[1] < shoulder_y + torso * config.REACH_HEIGHT_RATIO)
-        r_reaching = (r_w_conf > config.POSE_KEYPOINT_CONF) and (r_wrist[1] < shoulder_y + torso * config.REACH_HEIGHT_RATIO)
+        # Bag stashing requires hands manipulating together in lap/bag area
+        hand_in_bag = (
+            (l_w_conf > 0.3 and r_w_conf > 0.3) and
+            (mid_hip_y - 0.10 * torso < min(l_wrist[1], r_wrist[1]) < mid_knee_y + 0.20 * torso) and
+            (min_hip_x <= l_wrist[0] <= max_hip_x or min_hip_x <= r_wrist[0] <= max_hip_x) and
+            (w_dist < 0.45)
+        )
+        if hand_in_bag:
+            self.bag_dwell_frames += 1
+            self.active_suspicious_joints.append((9, 10))
+        else:
+            self.bag_dwell_frames = max(0, self.bag_dwell_frames - 2)
+            
+        bag_dwell_sec = self.bag_dwell_frames / fps
+        if bag_dwell_sec >= config.BAG_DWELL_TIME_SEC:
+            self.bag_conf = min(0.95, 0.55 + 0.35 * min(1.0, (bag_dwell_sec - config.BAG_DWELL_TIME_SEC) / 0.6))
+        elif bag_dwell_sec > 0.12:
+            self.bag_conf = 0.30 + 0.25 * (bag_dwell_sec / config.BAG_DWELL_TIME_SEC)
+        else:
+            self.bag_conf = max(0.0, self.bag_conf * 0.85)
+
+        # ----------------------------------------------------
+        # 4. REACH -> CONCEAL SEQUENCE (Shelf Pick -> Pocket/Bag/Chest)
+        # ----------------------------------------------------
+        shoulder_y = min(snapshot.l_shoulder[1], snapshot.r_shoulder[1])
+        mid_hip_y = (snapshot.l_hip[1] + snapshot.r_hip[1]) / 2.0
+        
+        # Shelf reach: either hand raised to shelf level, or reaching horizontally outward above waist
+        l_raised = (l_w_conf > 0.35) and (l_wrist[1] < shoulder_y + torso * config.REACH_HEIGHT_RATIO)
+        r_raised = (r_w_conf > 0.35) and (r_wrist[1] < shoulder_y + torso * config.REACH_HEIGHT_RATIO)
+        
+        l_horiz_reach = (l_w_conf > 0.35) and (abs(l_wrist[0] - snapshot.l_shoulder[0]) > 0.50 * torso) and (l_wrist[1] < mid_hip_y - 0.05 * torso)
+        r_horiz_reach = (r_w_conf > 0.35) and (abs(r_wrist[0] - snapshot.r_shoulder[0]) > 0.50 * torso) and (r_wrist[1] < mid_hip_y - 0.05 * torso)
+        
+        l_reaching = l_raised or l_horiz_reach
+        r_reaching = r_raised or r_horiz_reach
         
         if l_reaching or r_reaching:
             self.reach_state = True
             self.reach_timestamp = current_time
             self.reach_hand = 'left' if l_reaching else 'right'
             
-        # Check if sequence is completed: reach followed by pocket within time window
+        # Check if sequence is completed: reach followed by sustained pocket/chest/bag dwell
         if self.reach_state and (current_time - self.reach_timestamp <= config.CONCEAL_SEQUENCE_WINDOW_SEC):
-            if (self.reach_hand == 'right' and right_in_pocket) or \
-               (self.reach_hand == 'left' and left_in_pocket) or \
-               (hand_in_chest):
-                # Reach followed by pocket dwell! Very high shoplifting probability
-                self.sequence_conf = min(0.98, 0.75 + 0.20 * min(1.0, dwell_sec / 0.8))
+            conceal_dwell = 0.0
+            if (self.reach_hand == 'right' and right_in_pocket) or (self.reach_hand == 'left' and left_in_pocket):
+                conceal_dwell = dwell_sec
+            elif hand_in_chest and chest_dwell_sec >= 0.20:
+                conceal_dwell = chest_dwell_sec
+            elif hand_in_bag and bag_dwell_sec >= 0.20:
+                conceal_dwell = bag_dwell_sec
+                
+            if conceal_dwell >= 0.20:
+                self.sequence_conf = min(0.98, 0.75 + 0.20 * min(1.0, (conceal_dwell - 0.20) / 0.5))
         else:
             if current_time - self.reach_timestamp > config.CONCEAL_SEQUENCE_WINDOW_SEC:
                 self.reach_state = False
@@ -285,13 +331,20 @@ class PersonTracker:
         if current_time is None:
             current_time = time.time()
             
-        # Dynamic fusion of confidence values
+        # Behavioral threat fusion: Concealment requires shelf reach context
+        # (Passive hands-in-pockets or sitting with hands in lap without reaching is capped below ALERT)
+        pocket_threat = self.pocket_conf * 0.90 if (self.reach_state or self.pocket_conf >= 0.85) else self.pocket_conf * 0.35
+        chest_threat = self.chest_conf * 0.85 if (self.reach_state or self.chest_conf >= 0.80) else self.chest_conf * 0.30
+        bag_threat = self.bag_conf * 0.85 if self.reach_state else self.bag_conf * 0.20
+        crouch_threat = self.crouch_conf * 0.65 if self.reach_state else self.crouch_conf * 0.30
+
         raw_threat = max(
             self.sequence_conf,
-            self.pocket_conf * 0.90,
-            self.chest_conf * 0.88,
-            self.crouch_conf * 0.75,
-            (self.pocket_conf * 0.6 + self.crouch_conf * 0.5)
+            pocket_threat,
+            chest_threat,
+            bag_threat,
+            crouch_threat,
+            (pocket_threat * 0.5 + crouch_threat * 0.5)
         )
         
         # Exponential moving average filter for smooth stability
@@ -318,13 +371,15 @@ class PersonTracker:
             self.last_alert_time = current_time
             
             reasons = []
-            if self.sequence_conf >= 0.60:
-                reasons.append(f"Reach & Pocket sequence ({int(self.sequence_conf*100)}%)")
-            if self.pocket_conf >= 0.55:
+            if self.sequence_conf >= 0.50:
+                reasons.append(f"Reach & Conceal sequence ({int(self.sequence_conf*100)}%)")
+            if self.pocket_conf >= 0.45:
                 reasons.append(f"Pocket concealment dwell ({int(self.pocket_conf*100)}%)")
-            if self.chest_conf >= 0.55:
+            if self.chest_conf >= 0.45:
                 reasons.append(f"Jacket/chest concealment ({int(self.chest_conf*100)}%)")
-            if self.crouch_conf >= 0.55:
+            if self.bag_conf >= 0.45:
+                reasons.append(f"Bag/backpack stashing dwell ({int(self.bag_conf*100)}%)")
+            if self.crouch_conf >= 0.45:
                 reasons.append(f"Suspicious crouching/loitering ({int(self.crouch_conf*100)}%)")
                 
             if not reasons:
@@ -337,6 +392,7 @@ class PersonTracker:
                 "threat_level": self.threat_level,
                 "pocket_conf": round(self.pocket_conf * 100, 1),
                 "chest_conf": round(self.chest_conf * 100, 1),
+                "bag_conf": round(self.bag_conf * 100, 1),
                 "sequence_conf": round(self.sequence_conf * 100, 1),
                 "crouch_conf": round(self.crouch_conf * 100, 1),
                 "reasons": reasons,
@@ -400,6 +456,10 @@ class MultiPersonTrackerManager:
             del self.trackers[pid]
             
         return alerts_in_frame
+
+    def reset(self):
+        """Reset all active tracks and states (e.g., when video stream source changes)."""
+        self.trackers.clear()
 
     def get_active_telemetry(self):
         """Get live states for all actively tracked individuals."""

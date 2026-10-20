@@ -16,6 +16,23 @@ document.addEventListener("DOMContentLoaded", () => {
     initWebSocket();
 });
 
+// Unlock Web Audio API context on first user interaction to satisfy browser autoplay policies
+function unlockAudioContext() {
+    try {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    } catch (e) {
+        console.warn("Audio unlock error:", e);
+    }
+}
+window.addEventListener('click', unlockAudioContext, { once: true });
+window.addEventListener('keydown', unlockAudioContext, { once: true });
+window.addEventListener('touchstart', unlockAudioContext, { once: true });
+
 // =====================================================================
 // Real-time Clock
 // =====================================================================
@@ -379,19 +396,26 @@ function handleVideoUpload(input) {
     fetch("/api/upload", {
         method: "POST",
         body: formData
-    }).then(res => res.json())
-      .then(data => {
-          if (uploadPill) {
-              uploadPill.querySelector("span").innerText = "Upload Video";
-              setSourceActivePill("file");
-          }
-          document.getElementById("stream-source-label").innerText = `SRC: ${file.name}`;
-          const stream = document.getElementById("surveillance-stream");
-          if (stream) stream.src = `/video_feed?t=${Date.now()}`;
-      }).catch(err => {
-          console.error("Upload failed:", err);
-          if (uploadPill) uploadPill.querySelector("span").innerText = "Upload Video";
-      });
+    }).then(async res => {
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.detail || "Video upload failed");
+        }
+        return data;
+    }).then(data => {
+        if (uploadPill) {
+            uploadPill.querySelector("span").innerText = "Upload Video";
+            setSourceActivePill("file");
+        }
+        document.getElementById("stream-source-label").innerText = `SRC: ${file.name}`;
+        const stream = document.getElementById("surveillance-stream");
+        if (stream) stream.src = `/video_feed?t=${Date.now()}`;
+    }).catch(err => {
+        console.error("Upload failed:", err);
+        alert(`Video upload failed: ${err.message}`);
+        if (uploadPill) uploadPill.querySelector("span").innerText = "Upload Video";
+        input.value = "";
+    });
 }
 
 function toggleFeature(feature, val) {

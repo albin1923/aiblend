@@ -15,7 +15,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -54,6 +54,7 @@ class VideoStreamManager:
         self.active_alerts = []
         self.all_incidents = []
         self.connected_websockets: List[WebSocket] = []
+        self.main_loop: asyncio.AbstractEventLoop = None
         
         # Ensure demo video exists
         self.demo_video_path = config.DATA_DIR / "demo_shoplifting.mp4"
@@ -89,6 +90,9 @@ class VideoStreamManager:
                 self.current_source_type = "demo"
                 self.cap = cv2.VideoCapture(str(self.demo_video_path))
                 
+            # Reset tracker states so previous tracks do not contaminate the new stream
+            self.detector.reset()
+            self.latest_telemetry["persons"] = []
             print(f"[StreamManager] Switched source to: {self.current_source_type}")
 
     def switch_source(self, source_type: str, file_path: str = None):
@@ -141,6 +145,7 @@ class VideoStreamManager:
                     "threat_level": alert["threat_level"],
                     "pocket_conf": alert["pocket_conf"],
                     "chest_conf": alert["chest_conf"],
+                    "bag_conf": alert.get("bag_conf", 0.0),
                     "sequence_conf": alert["sequence_conf"],
                     "crouch_conf": alert["crouch_conf"],
                     "reasons": alert["reasons"],
@@ -168,7 +173,7 @@ class VideoStreamManager:
                 time.sleep(0.005)
 
     def _broadcast_event(self, data: dict):
-        """Broadcast payload to connected websockets."""
+        """Broadcast payload to connected websockets safely across threads."""
         if not self.connected_websockets:
             return
             
@@ -181,14 +186,11 @@ class VideoStreamManager:
                     if ws in self.connected_websockets:
                         self.connected_websockets.remove(ws)
                         
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_send())
-            else:
-                loop.run_until_complete(_send())
-        except Exception:
-            pass
+        if self.main_loop and self.main_loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(_send(), self.main_loop)
+            except Exception:
+                pass
 
     def get_jpeg_frame(self) -> bytes:
         """Encode current annotated frame into JPEG for MJPEG stream."""
@@ -208,12 +210,18 @@ class VideoStreamManager:
 stream_mgr = VideoStreamManager()
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Capture main asyncio event loop for thread-safe WebSocket broadcasts."""
+    stream_mgr.main_loop = asyncio.get_running_loop()
+
+
 # -------------------------------------------------------------
 # Streaming Routes
 # -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    return templates.TemplateResponse("index.html", {"request": {}})
+async def index(request: Request):
+    return templates.TemplateResponse(request=request, name="index.html")
 
 
 def mjpeg_generator():
@@ -241,6 +249,7 @@ def video_feed():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     stream_mgr.connected_websockets.append(websocket)
+    last_sent_incident_id = stream_mgr.all_incidents[0]["id"] if stream_mgr.all_incidents else None
     try:
         # Initial greeting with recent incidents
         await websocket.send_text(json.dumps({
@@ -257,6 +266,21 @@ async def websocket_endpoint(websocket: WebSocket):
         }))
         
         while True:
+            # Check for newly added incidents (double redundancy for instant delivery)
+            if stream_mgr.all_incidents:
+                new_incidents = []
+                for inc in stream_mgr.all_incidents:
+                    if inc["id"] == last_sent_incident_id:
+                        break
+                    new_incidents.append(inc)
+                if new_incidents:
+                    last_sent_incident_id = new_incidents[0]["id"]
+                    for inc in reversed(new_incidents):
+                        await websocket.send_text(json.dumps({
+                            "type": "NEW_ALERT",
+                            "incident": inc
+                        }))
+
             # Send periodic telemetry updates
             data = {
                 "type": "TELEMETRY",
@@ -315,14 +339,41 @@ async def switch_source_endpoint(source: str = Form(...)):
 
 @app.post("/api/upload")
 async def upload_video(file: UploadFile = File(...)):
-    """Upload custom video for shoplifting analysis."""
-    safe_name = f"{int(time.time())}_{file.filename}"
+    """Upload custom video for shoplifting analysis with format and size validation."""
+    allowed_exts = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+    file_ext = Path(file.filename or "").suffix.lower()
+    if file_ext not in allowed_exts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format '{file_ext}'. Allowed formats: {', '.join(sorted(allowed_exts))}"
+        )
+
+    safe_name = f"{int(time.time())}_{uuid.uuid4().hex[:6]}_{file.filename}"
     save_path = config.UPLOAD_DIR / safe_name
     
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > 200 * 1024 * 1024:  # 200MB limit
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 200MB.")
+
     with open(save_path, "wb") as f:
-        content = await file.read()
         f.write(content)
         
+    # Verify OpenCV can read this video file
+    test_cap = cv2.VideoCapture(str(save_path))
+    if not test_cap.isOpened():
+        test_cap.release()
+        if save_path.exists():
+            save_path.unlink()
+        raise HTTPException(status_code=400, detail="Invalid video file: OpenCV was unable to decode it.")
+    ret, _ = test_cap.read()
+    test_cap.release()
+    if not ret:
+        if save_path.exists():
+            save_path.unlink()
+        raise HTTPException(status_code=400, detail="Video contains no readable frames.")
+
     # Switch to uploaded video immediately
     stream_mgr.switch_source("file", str(save_path))
     return {"status": "success", "filename": safe_name, "message": "Video loaded and playing"}
@@ -372,7 +423,7 @@ async def get_status():
     import torch
     return {
         "status": "ONLINE",
-        "gpu_available": torch.cuda.is_available() if "torch" in globals() else False,
+        "gpu_available": torch.cuda.is_available(),
         "device": stream_mgr.detector.device,
         "active_source": stream_mgr.current_source_type,
         "fps": stream_mgr.latest_telemetry["fps"],
